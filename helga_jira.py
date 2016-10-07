@@ -3,7 +3,7 @@ import re
 
 import requests
 import smokesignal
-
+from jira import JIRA
 from requests.auth import HTTPBasicAuth
 from twisted.internet import reactor
 
@@ -12,9 +12,7 @@ from helga.db import db
 from helga.plugins import command, match, ACKS, ResponseNotReady
 from helga.util.encodings import to_unicode
 
-
 logger = log.getLogger(__name__)
-
 
 # These are initialized on client signon
 JIRA_PATTERNS = set()
@@ -112,7 +110,7 @@ def jira_command(client, channel, nick, message, cmd, args):
 
 def _rest_desc(ticket, url, auth=None):
     api_url = to_unicode(getattr(settings, 'JIRA_REST_API', 'http://localhost/api/{ticket}'))
-    resp = requests.get(api_url.format(ticket=ticket), auth=auth)
+    resp = requests.get(api_url.format(ticket=ticket), auth=auth, verify=False)
 
     try:
         resp.raise_for_status()
@@ -159,8 +157,66 @@ def jira_match(client, channel, nick, message, matches):
     raise ResponseNotReady
 
 
+def create_ticket(args):
+    # (u'jira', [u'create', u'XXX', u'Bug', u'Help', u'Help', u"I've", u'fallen'])
+    # print args
+    try:
+        subargs = args[1]
+        new_issue = get_jira().create_issue(
+            project=subargs[1],
+            summary=" ".join(subargs[3:]),
+            issuetype={'name': subargs[2]}
+        )
+        return "Ticket created : {url}/browse/{ticket_id}".format(url=jira_server, ticket_id=new_issue.key)
+    except Exception as e:
+        return "Failed to create ticket: {e}".format(e=e)
+
+
+def assign_ticket(args):
+    try:
+        subargs = args[1]
+        ticket_id = subargs[1]
+        jira_username = subargs[2]
+        get_jira().assign_issue(ticket_id, jira_username)
+        return "Successfully assigned issue {ticket_id} to {jira_username}".format(
+            ticket_id=ticket_id, jira_username=jira_username)
+    except Exception as e:
+        error = "{e}".format(e=e)
+        read_data = error
+        try:
+            file = error.split()[len(error.split())-1]
+            with open(file, 'r') as f:
+                for line in f:
+                    if "response text" in line:
+                        read_data = line
+        except:
+            pass
+        return "Failed to assign ticket: {data}".format(data=read_data)
+
+
+def add_comment(args):
+    try:
+        subargs = args[1]
+        ticket_id = subargs[1]
+        comment = " ".join(subargs[2:])
+        get_jira().add_comment(ticket_id, comment)
+        return "Successfully added comment to {ticket_id}".format(ticket_id=ticket_id)
+    except Exception as e:
+        error = "{e}".format(e=e)
+        read_data = error
+        try:
+            file = error.split()[len(error.split())-1]
+            with open(file, 'r') as f:
+                for line in f:
+                    if "response text" in line:
+                        read_data = line
+        except:
+            pass
+        return "Failed to comment ticket: {data}".format(data=read_data)
+
+
 @match(find_jira_numbers)
-@command('jira', help="Add or remove jira ticket patterns, excludeing numbers."
+@command('jira', help="Add or remove jira ticket patterns, excluding numbers."
                       "Usage: helga jira (add_re|remove_re) <pattern>")
 def jira(client, channel, nick, message, *args):
     """
@@ -176,8 +232,64 @@ def jira(client, channel, nick, message, *args):
 
     Ticket numbers are automatically detected.
     """
+
+    if len(args) > 1 and len(args[1]) > 0:
+        subcommand = args[1][0]
+        if subcommand == 'show':
+            return show_ticket(args)
+        elif subcommand == "create":
+            return create_ticket(args)
+        elif subcommand == "assign":
+            return assign_ticket(args)
+        elif subcommand == "comment":
+            return add_comment(args)
+
     if len(args) == 2:
         fn = jira_command
     else:
         fn = jira_match
     return fn(client, channel, nick, message, *args)
+
+
+def show_ticket(args):
+    # url, subject, assignee, status, priority
+    # print "args = {}".format(args)
+    ticket_id = args[1][1]
+    issue = get_jira().issue(ticket_id)
+    # print "{url}/browse/{ticket_id}".format(url=jira_server, ticket_id=ticket_id)
+    # print issue.fields.summary
+    # print issue.fields.assignee
+    # print issue.fields.status
+
+    return [
+        "{url}/browse/{ticket_id}".format(url=jira_server, ticket_id=ticket_id),
+        "`Summary: {0}`".format(issue.fields.summary),
+        "`Assignee: {0}`".format(issue.fields.assignee),
+        "`Status: {0}`".format(issue.fields.status),
+        "`Priority: {0}`".format(issue.fields.priority.name),
+    ]
+
+
+_jira = None
+jira_server = None
+
+
+def get_jira():
+    global _jira, jira_server
+    if _jira:
+        try:
+            # search for an old existing issue as a cheap health check
+            issue = _jira.issue('FDS-1620', fields='summary,comment')
+            if issue:
+                return _jira
+        except:
+            # pass here and assume that things are broken and recreate the _jira object
+            pass
+
+    user_pass = getattr(settings, 'JIRA_AUTH', ('', ''))
+    jira_server = getattr(settings, 'JIRA_URL', 'http://localhost')
+    options = {
+        "verify": False
+    }
+    _jira = JIRA(server=jira_server, basic_auth=user_pass, options=options)
+    return _jira
