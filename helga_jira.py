@@ -169,7 +169,17 @@ def create_ticket(args):
         )
         return "Ticket created : {url}/browse/{ticket_id}".format(url=jira_server, ticket_id=new_issue.key)
     except Exception as e:
-        return "Failed to create ticket: {e}".format(e=e)
+        error = "{e}".format(e=e)
+        read_data = error
+        try:
+            file = error.split()[len(error.split())-1]
+            with open(file, 'r') as f:
+                for line in f:
+                    if "response text" in line:
+                        read_data = line
+        except:
+            pass
+        return "Failed to create ticket: {data}".format(data=read_data)
 
 
 def assign_ticket(args):
