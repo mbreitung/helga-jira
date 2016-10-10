@@ -17,6 +17,9 @@ logger = log.getLogger(__name__)
 # These are initialized on client signon
 JIRA_PATTERNS = set()
 
+_jira = None
+jira_server = None
+
 
 @smokesignal.on('signon')
 def init_jira_patterns(*args, **kwargs):
@@ -92,25 +95,29 @@ def remove_re(pattern):
 
 def jira_command(client, channel, nick, message, cmd, args):
     """
-    Command handler for the jira plugin
+    Command handler for the jira regex command
     """
     try:
         subcmd, pattern = args[:2]
     except ValueError:
         return None
 
+    if pattern == "help":
+        # this means that we cannot have a project in Jira called 'help'
+        return "Add or remove jira ticket patterns, excluding numbers. " \
+               "Usage: !jira (add_re|remove_re) <pattern>"
+
     if subcmd == 'add_re':
         return add_re(pattern)
-
-    if subcmd == 'remove_re':
+    elif subcmd == 'remove_re':
         return remove_re(pattern)
-
-    return None
+    else:
+        return None
 
 
 def _rest_desc(ticket, url, auth=None):
     api_url = to_unicode(getattr(settings, 'JIRA_REST_API', 'http://localhost/api/{ticket}'))
-    resp = requests.get(api_url.format(ticket=ticket), auth=auth, verify=False)
+    resp = requests.get(api_url.format(ticket=ticket), auth=auth, verify=getattr(settings, 'JIRA_SSL_VERIFY', True))
 
     try:
         resp.raise_for_status()
@@ -158,10 +165,10 @@ def jira_match(client, channel, nick, message, matches):
 
 
 def create_ticket(args):
-    # (u'jira', [u'create', u'XXX', u'Bug', u'Help', u'Help', u"I've", u'fallen'])
-    # print args
     try:
         subargs = args[1]
+        if subargs == "help":
+            return "Create a new ticket -- Usage: !jira create <project_id> <issue_type (Bug, Task)> <summary>"
         new_issue = get_jira().create_issue(
             project=subargs[1],
             summary=" ".join(subargs[3:]),
@@ -172,7 +179,7 @@ def create_ticket(args):
         error = "{e}".format(e=e)
         read_data = error
         try:
-            file = error.split()[len(error.split())-1]
+            file = error.split()[len(error.split()) - 1]
             with open(file, 'r') as f:
                 for line in f:
                     if "response text" in line:
@@ -186,6 +193,8 @@ def assign_ticket(args):
     try:
         subargs = args[1]
         ticket_id = subargs[1]
+        if ticket_id == "help":
+            return "Assign ticket to a user -- Usage: !jira assign <ticket_id> <username>"
         jira_username = subargs[2]
         get_jira().assign_issue(ticket_id, jira_username)
         return "Successfully assigned issue {ticket_id} to {jira_username}".format(
@@ -194,7 +203,7 @@ def assign_ticket(args):
         error = "{e}".format(e=e)
         read_data = error
         try:
-            file = error.split()[len(error.split())-1]
+            file = error.split()[len(error.split()) - 1]
             with open(file, 'r') as f:
                 for line in f:
                     if "response text" in line:
@@ -208,6 +217,8 @@ def add_comment(args):
     try:
         subargs = args[1]
         ticket_id = subargs[1]
+        if ticket_id == "help":
+            return "Add comment to a ticket -- Usage: !jira comment <ticket_id> <comment>"
         comment = " ".join(subargs[2:])
         get_jira().add_comment(ticket_id, comment)
         return "Successfully added comment to {ticket_id}".format(ticket_id=ticket_id)
@@ -215,7 +226,7 @@ def add_comment(args):
         error = "{e}".format(e=e)
         read_data = error
         try:
-            file = error.split()[len(error.split())-1]
+            file = error.split()[len(error.split()) - 1]
             with open(file, 'r') as f:
                 for line in f:
                     if "response text" in line:
@@ -226,8 +237,7 @@ def add_comment(args):
 
 
 @match(find_jira_numbers)
-@command('jira', help="Add or remove jira ticket patterns, excluding numbers."
-                      "Usage: helga jira (add_re|remove_re) <pattern>")
+@command('jira', help="Various jira commands: show, create, comment, assign, add_re, delete_re")
 def jira(client, channel, nick, message, *args):
     """
     A plugin for showing URLs to JIRA ticket numbers. This is both a command to add or remove
@@ -253,6 +263,8 @@ def jira(client, channel, nick, message, *args):
             return assign_ticket(args)
         elif subcommand == "comment":
             return add_comment(args)
+        elif subcommand == "help":
+            return "To get help, specify a subcommand and then help: (show, create, assign, comment, add_re, remove_re) help"
 
     if len(args) == 2:
         fn = jira_command
@@ -262,14 +274,10 @@ def jira(client, channel, nick, message, *args):
 
 
 def show_ticket(args):
-    # url, subject, assignee, status, priority
-    # print "args = {}".format(args)
     ticket_id = args[1][1]
+    if ticket_id == "help":
+        return "Show jira ticket details (Assignee, Status, Summary, Priority) -- Usage: !jira show <ticket_id>"
     issue = get_jira().issue(ticket_id)
-    # print "{url}/browse/{ticket_id}".format(url=jira_server, ticket_id=ticket_id)
-    # print issue.fields.summary
-    # print issue.fields.assignee
-    # print issue.fields.status
 
     return [
         "{url}/browse/{ticket_id}".format(url=jira_server, ticket_id=ticket_id),
@@ -278,10 +286,6 @@ def show_ticket(args):
         "`Status: {0}`".format(issue.fields.status),
         "`Priority: {0}`".format(issue.fields.priority.name),
     ]
-
-
-_jira = None
-jira_server = None
 
 
 def get_jira():
@@ -299,7 +303,7 @@ def get_jira():
     user_pass = getattr(settings, 'JIRA_AUTH', ('', ''))
     jira_server = getattr(settings, 'JIRA_URL', 'http://localhost')
     options = {
-        "verify": False
+        "verify": getattr(settings, 'JIRA_SSL_VERIFY', True)
     }
     _jira = JIRA(server=jira_server, basic_auth=user_pass, options=options)
     return _jira
